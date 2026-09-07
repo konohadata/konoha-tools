@@ -1,0 +1,31 @@
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+.env.local
+
+# Data files
+users.json
+data_abk.json
+backup_data_*.json
+
+# Temporary files
+temp_excel/
+*.log
+
+# Sensitive files
+*.pem
+*.key
+*.crt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# PM2
+.pm2/
