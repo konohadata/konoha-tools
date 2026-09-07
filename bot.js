@@ -1,5 +1,5 @@
 // ============================
-// BOT.JS - ABH DATA STORE (TANPA MENU)
+// BOT.JS - ABH DATA STORE (DENGAN SOLD SYSTEM, NOTIF & CART + PAGINATION + TOMBOL ANGKA)
 // ============================
 
 const TelegramBot = require("node-telegram-bot-api");
@@ -15,6 +15,24 @@ const broadcast = require('./broadcast.js');
 const config = require('./config');
 const BOT_TOKEN = config.BOT.TOKEN;
 const OWNER_ID = config.BOT.OWNER_ID;
+
+// ============================
+// NOTIFICATION BOT
+// ============================
+const NOTIF_BOT_TOKEN = config.NOTIFICATION?.BOT_TOKEN || null;
+const NOTIF_CHAT_ID = config.NOTIFICATION?.CHAT_ID || null;
+const NOTIF_ENABLED = config.NOTIFICATION?.ENABLED || false;
+const NOTIF_TO_OWNER = config.NOTIFICATION?.SEND_TO_OWNER || true;
+
+let notifBot = null;
+if (NOTIF_BOT_TOKEN && NOTIF_ENABLED) {
+    try {
+        notifBot = new TelegramBot(NOTIF_BOT_TOKEN, { polling: false });
+        console.log('✅ Notification Bot initialized');
+    } catch (e) {
+        console.log('⚠️ Failed to init notification bot:', e.message);
+    }
+}
 
 // ============================
 // INIT BOT
@@ -76,9 +94,15 @@ const qrisMessageIds = {};
 const processingUsers = new Set();
 
 // ============================
+// 🛒 CART SYSTEM
+// ============================
+const cartSessions = {};
+const cartTotalSessions = {};
+
+// ============================
 // IMPORT MENU
 // ============================
-const { showMenu, showAkun, showBantuan, isOwner } = require('./menu.js');
+const { showMenu, showAkun, showBantuan, isOwner, showHubungiOwner } = require('./menu.js');
 const { generateQRIS, cekStatusDualWithRetry } = require('./payment.js');
 
 // ============================
@@ -304,7 +328,11 @@ const processExcel = async (filePath) => {
                 JmlKartu: parseInt(getVal(idxJmlKartu)) || 1,
                 IuranTerakhir: getVal(idxIuran) || '-',
                 LasikError: getVal(idxLasik) || '-',
-                Harga: hargaFinal
+                Harga: hargaFinal,
+                sold: false,
+                soldTo: null,
+                soldAt: null,
+                transactionId: null
             };
             
             const formatted = buildOutputText(obj, jsCounter);
@@ -370,9 +398,366 @@ const downloadFile = async (fileId) => {
 };
 
 // ============================
-// 🔍 FUNGSI SEARCH KABUPATEN
+// 🔥 FUNGSI KIRIM NOTIFIKASI KE BOT LAIN
 // ============================
-const searchByKabupaten = async (chatId, keyword) => {
+const sendNotification = async (abhNumber, item, userId, username, transactionId, amount) => {
+    if (!NOTIF_ENABLED) {
+        console.log('ℹ️ Notifications disabled');
+        return;
+    }
+    
+    if (!notifBot) {
+        console.log('⚠️ Notification bot not initialized');
+        return;
+    }
+    
+    try {
+        const message = `
+🔔 <b>PEMBELIAN DATA ABH</b>
+━━━━━━━━━━━━━━━━━━━━
+
+📌 <b>Data:</b> ABH ${String(abhNumber).padStart(3, '0')}
+📍 <b>Kabupaten:</b> ${item.Kabupaten}
+📍 <b>Kecamatan:</b> ${item.Kecamatan}
+📍 <b>Kelurahan:</b> ${item.Kelurahan}
+
+👤 <b>Pembeli:</b> ${username || 'Unknown'}
+🆔 <b>User ID:</b> <code>${userId}</code>
+💵 <b>Harga:</b> Rp${formatRupiah(amount)}
+🆔 <b>Transaksi:</b> ${transactionId}
+📅 <b>Tanggal:</b> ${new Date().toLocaleString('id-ID')}
+
+━━━━━━━━━━━━━━━━━━━━
+✅ <b>STATUS: BERHASIL</b>
+`;
+
+        if (NOTIF_CHAT_ID) {
+            await notifBot.sendMessage(NOTIF_CHAT_ID, message, { parse_mode: "HTML" });
+            console.log(`📨 Notification sent to channel: ${NOTIF_CHAT_ID}`);
+        }
+        
+        if (NOTIF_TO_OWNER) {
+            await notifBot.sendMessage(OWNER_ID, message, { parse_mode: "HTML" });
+            console.log(`📨 Notification sent to owner: ${OWNER_ID}`);
+        }
+        
+    } catch (error) {
+        console.error('❌ Failed to send notification:', error.message);
+    }
+};
+
+// ============================
+// 🛒 FUNGSI TROLI BELANJA
+// ============================
+
+const addToCart = async (chatId, num) => {
+    const data = dataStore.data || [];
+    const index = num - 1;
+    
+    if (index < 0 || index >= data.length) {
+        await bot.sendMessage(chatId, '❌ Data tidak ditemukan!');
+        return false;
+    }
+    
+    const item = data[index];
+    
+    if (item.sold) {
+        await bot.sendMessage(chatId, `
+❌ <b>DATA SUDAH TERJUAL!</b>
+
+ABH ${String(num).padStart(3, '0')}
+📍 ${item.Kabupaten} - ${item.Kecamatan}
+
+💡 Data ini sudah dibeli oleh user lain.
+        `, { parse_mode: "HTML" });
+        return false;
+    }
+    
+    if (!cartSessions[chatId]) {
+        cartSessions[chatId] = [];
+    }
+    
+    const existing = cartSessions[chatId].find(c => c.jsNumber === num);
+    if (existing) {
+        await bot.sendMessage(chatId, `
+⚠️ <b>DATA SUDAH DI TROLI!</b>
+
+ABH ${String(num).padStart(3, '0')}
+📍 ${item.Kabupaten} - ${item.Kecamatan}
+
+💡 Data ini sudah Anda tambahkan ke TROLI.
+📌 Klik "🛒 Lihat TROLI" untuk melihat semua.
+        `, { parse_mode: "HTML" });
+        return false;
+    }
+    
+    cartSessions[chatId].push({
+        jsNumber: num,
+        item: item,
+        harga: item.harga || 5000,
+        formatted: item.formatted,
+        fullFormatted: item.fullFormatted
+    });
+    
+    updateCartTotal(chatId);
+    
+    const totalItems = cartSessions[chatId].length;
+    const totalHarga = cartSessions[chatId].reduce((sum, c) => sum + c.harga, 0);
+    
+    await bot.sendMessage(chatId, `
+✅ <b>DATA DITAMBAHKAN KE TROLI!</b>
+
+ABH ${String(num).padStart(3, '0')}
+📍 ${item.Kabupaten} - ${item.Kecamatan}
+💵 Harga: Rp${formatRupiah(item.harga || 5000)}
+
+━━━━━━━━━━━━━━━━━━━━
+🛒 <b>TROLI:</b> ${totalItems} data
+💰 <b>Total:</b> Rp${formatRupiah(totalHarga)}
+
+📌 Klik tombol di bawah untuk:
+├ ➕ Tambah data lain
+├ 🛒 Lihat TROLI
+└ 💳 Bayar sekarang
+    `, {
+        parse_mode: "HTML",
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "➕ Tambah Lagi", callback_data: "cart_add_more" }],
+                [{ text: "🛒 Lihat TROLI", callback_data: "cart_view" }],
+                [{ text: "💳 Bayar Sekarang", callback_data: "cart_checkout" }]
+            ]
+        }
+    });
+    
+    return true;
+};
+
+const updateCartTotal = (chatId) => {
+    if (!cartSessions[chatId] || cartSessions[chatId].length === 0) {
+        delete cartTotalSessions[chatId];
+        return;
+    }
+    const total = cartSessions[chatId].reduce((sum, c) => sum + c.harga, 0);
+    cartTotalSessions[chatId] = total;
+};
+
+const viewCart = async (chatId) => {
+    if (!cartSessions[chatId] || cartSessions[chatId].length === 0) {
+        await bot.sendMessage(chatId, `
+🛒 <b>TROLI KOSONG!</b>
+
+💡 Cari data dan klik "🛒 Tambah ke TROLI" untuk mulai belanja.
+        `, { parse_mode: "HTML" });
+        return;
+    }
+    
+    const items = cartSessions[chatId];
+    const totalItems = items.length;
+    const totalHarga = items.reduce((sum, c) => sum + c.harga, 0);
+    
+    let text = `
+🛒 <b>TROLI BELANJA</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>Total Data:</b> ${totalItems}
+💰 <b>Total Harga:</b> Rp${formatRupiah(totalHarga)}
+━━━━━━━━━━━━━━━━━━━━
+`;
+
+    for (let i = 0; i < items.length; i++) {
+        const c = items[i];
+        const num = String(c.jsNumber).padStart(3, '0');
+        text += `
+${i+1}. ABH ${num} | ${c.item.Kabupaten}
+   💵 Rp${formatRupiah(c.harga)}
+   📌 <code>${c.item.Nama}</code>
+`;
+    }
+
+    text += `
+━━━━━━━━━━━━━━━━━━━━
+📌 <b>Total:</b> Rp${formatRupiah(totalHarga)}
+💡 Klik tombol di bawah untuk melanjutkan.
+`;
+
+    await bot.sendMessage(chatId, text, {
+        parse_mode: "HTML",
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "➕ Tambah Data", callback_data: "cart_add_more" }],
+                [{ text: "🗑️ Kosongkan TROLI", callback_data: "cart_clear" }],
+                [{ text: "💳 Bayar Sekarang", callback_data: "cart_checkout" }],
+                [{ text: "🔙 KEMBALI KE MENU", callback_data: "back_to_main" }]
+            ]
+        }
+    });
+};
+
+const checkoutCart = async (chatId, userId) => {
+    if (!cartSessions[chatId] || cartSessions[chatId].length === 0) {
+        await bot.sendMessage(chatId, '🛒 TROLI kosong!');
+        return;
+    }
+    
+    const items = cartSessions[chatId];
+    const totalItems = items.length;
+    const totalHarga = items.reduce((sum, c) => sum + c.harga, 0);
+    
+    const soldItems = [];
+    for (const c of items) {
+        const dataIndex = dataStore.data.findIndex(d => d.jsNumber === c.jsNumber);
+        if (dataIndex !== -1 && dataStore.data[dataIndex].sold === true) {
+            soldItems.push(c.jsNumber);
+        }
+    }
+    
+    if (soldItems.length > 0) {
+        const soldList = soldItems.map(n => `ABH ${String(n).padStart(3, '0')}`).join(', ');
+        cartSessions[chatId] = cartSessions[chatId].filter(c => !soldItems.includes(c.jsNumber));
+        updateCartTotal(chatId);
+        
+        await bot.sendMessage(chatId, `
+⚠️ <b>BEBERAPA DATA SUDAH TERJUAL!</b>
+
+❌ Data yang sudah terjual:
+${soldList}
+
+🛒 Data ini telah dihapus dari TROLI Anda.
+        `, { parse_mode: "HTML" });
+        
+        if (cartSessions[chatId].length === 0) {
+            delete cartSessions[chatId];
+            delete cartTotalSessions[chatId];
+            return;
+        }
+        
+        const remainingItems = cartSessions[chatId];
+        const remainingTotal = remainingItems.reduce((sum, c) => sum + c.harga, 0);
+        await bot.sendMessage(chatId, `
+🛒 <b>DATA TERSISA DI TROLI:</b> ${remainingItems.length} data
+💰 <b>Total:</b> Rp${formatRupiah(remainingTotal)}
+        `, { parse_mode: "HTML" });
+        return;
+    }
+    
+    const description = `Beli ${totalItems} data ABH`;
+    const loadingMsg = await bot.sendMessage(chatId, `⏳ <b>Generate QRIS untuk Rp${formatRupiah(totalHarga)}...</b>`, { parse_mode: "HTML" });
+    
+    try {
+        const result = await generateQRIS(totalHarga, description);
+        
+        if (!result.success) {
+            await bot.editMessageText(`
+❌ <b>Gagal generate QRIS!</b>
+📌 Error: ${result.error}
+💡 Silakan coba lagi atau hubungi admin.
+👑 Owner: @AbahKonoha
+            `, {
+                chat_id: chatId,
+                message_id: loadingMsg.message_id,
+                parse_mode: "HTML"
+            });
+            return;
+        }
+        
+        paymentSessions[chatId] = {
+            abhNumber: 'multiple',
+            transactionId: result.transaction_id,
+            amount: totalHarga,
+            timestamp: Date.now(),
+            userId: userId,
+            data: items,
+            fullData: items.map(c => c.fullFormatted || c.formatted).join('\n\n━━━━━━━━━━━━━━━━━━━\n\n'),
+            loadingMsgId: loadingMsg.message_id,
+            isCart: true,
+            cartItems: items
+        };
+        
+        try {
+            await bot.deleteMessage(chatId, loadingMsg.message_id);
+        } catch (e) {}
+        
+        const itemList = items.map(c => `ABH ${String(c.jsNumber).padStart(3, '0')} - ${c.item.Kabupaten}`).join('\n');
+        
+        if (result.image_data) {
+            const buffer = Buffer.from(result.image_data.split(',')[1], 'base64');
+            const sentMsg = await bot.sendPhoto(chatId, buffer, {
+                caption: `
+💰 <b>QRIS PEMBAYARAN</b>
+
+🛒 <b>Total Data:</b> ${items.length}
+📌 <b>Data:</b>
+${itemList}
+
+💵 <b>Total Harga:</b> Rp${formatRupiah(totalHarga)}
+🆔 <b>Transaksi:</b> ${result.transaction_id}
+
+⏳ Scan QRIS di atas untuk membayar.
+⏰ QRIS berlaku 15 menit.
+
+📌 Setelah bayar, klik "✅ CEK PEMBAYARAN"
+`,
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "✅ CEK PEMBAYARAN", callback_data: `check_payment_${result.transaction_id}` }],
+                        [{ text: "❌ BATAL", callback_data: "buy_cancel" }]
+                    ]
+                }
+            });
+            if (sentMsg) qrisMessageIds[chatId] = sentMsg.message_id;
+        } else if (result.qr_url) {
+            const sentMsg = await bot.sendPhoto(chatId, result.qr_url, {
+                caption: `
+💰 <b>QRIS PEMBAYARAN</b>
+
+🛒 <b>Total Data:</b> ${items.length}
+💵 <b>Total Harga:</b> Rp${formatRupiah(totalHarga)}
+🆔 <b>Transaksi:</b> ${result.transaction_id}
+
+⏳ Scan QRIS di atas untuk membayar.
+⏰ QRIS berlaku 15 menit.
+
+📌 Setelah bayar, klik "✅ CEK PEMBAYARAN"
+`,
+                parse_mode: "HTML",
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "✅ CEK PEMBAYARAN", callback_data: `check_payment_${result.transaction_id}` }],
+                        [{ text: "❌ BATAL", callback_data: "buy_cancel" }]
+                    ]
+                }
+            });
+            if (sentMsg) qrisMessageIds[chatId] = sentMsg.message_id;
+        } else {
+            await bot.sendMessage(chatId, `
+❌ <b>QRIS tidak tersedia!</b>
+Silakan hubungi admin untuk pembelian.
+👑 Owner: @AbahKonoha
+            `, { parse_mode: "HTML" });
+        }
+        
+    } catch (error) {
+        console.error('❌ Checkout error:', error.message);
+        await bot.sendMessage(chatId, `❌ <b>Error checkout!</b>\n\n${error.message}`, { parse_mode: "HTML" });
+    }
+};
+
+const clearCart = async (chatId) => {
+    delete cartSessions[chatId];
+    delete cartTotalSessions[chatId];
+    await bot.sendMessage(chatId, `
+🗑️ <b>TROLI DIKOSONGKAN!</b>
+🛒 TROLI belanja Anda telah dikosongkan.
+💡 Cari data baru untuk mulai belanja.
+    `, { parse_mode: "HTML" });
+};
+
+// ============================
+// 🔍 FUNGSI SEARCH DENGAN PAGINATION + TOMBOL ANGKA
+// ============================
+
+const searchByKabupaten = async (chatId, keyword, page = 0) => {
     const data = dataStore.data || [];
     
     if (data.length === 0) {
@@ -381,74 +766,221 @@ const searchByKabupaten = async (chatId, keyword) => {
     }
     
     const searchLower = keyword.toLowerCase().trim();
-    const results = data.filter(item => 
+    
+    // ===== ANIMASI LOADING =====
+    const loadingMsg = await bot.sendMessage(chatId, '⏳ <b>Mencari data</b> 🔍', { parse_mode: "HTML" });
+    
+    // Animasi loading berkedip (3 kali)
+    const loadingFrames = [
+        '⏳ <b>Mencari data</b> 🔍',
+        '⏳ <b>Mencari data.</b> 🔍',
+        '⏳ <b>Mencari data..</b> 🔍',
+        '⏳ <b>Mencari data...</b> 🔍'
+    ];
+    
+    for (let i = 0; i < 3; i++) {
+        for (const frame of loadingFrames) {
+            try {
+                await bot.editMessageText(frame, {
+                    chat_id: chatId,
+                    message_id: loadingMsg.message_id,
+                    parse_mode: "HTML"
+                });
+                await new Promise(r => setTimeout(r, 150));
+            } catch (e) {}
+        }
+    }
+    
+    // Cari semua data yang cocok (termasuk yang sudah sold)
+    const allFound = data.filter(item => 
         item.Kabupaten.toLowerCase().includes(searchLower) ||
         item.Kecamatan.toLowerCase().includes(searchLower) ||
         item.Kelurahan.toLowerCase().includes(searchLower)
     );
     
-    if (results.length === 0) {
-        await bot.sendMessage(chatId, `
-❌ <b>TIDAK DITEMUKAN!</b>
-
+    // Data yang tersedia (belum sold)
+    const availableResults = allFound.filter(item => !item.sold);
+    
+    // Hapus pesan loading
+    try {
+        await bot.deleteMessage(chatId, loadingMsg.message_id);
+    } catch (e) {}
+    
+    if (availableResults.length === 0) {
+        if (allFound.length > 0) {
+            await bot.sendMessage(chatId, `
+❌ <b>DATA SUDAH HABIS!</b>
 🔍 Keyword: "${keyword}"
-
-💡 Coba gunakan kata kunci lain:
-├ Cari berdasarkan Kabupaten
-├ Cari berdasarkan Kecamatan
-└ Cari berdasarkan Kelurahan
-
+📊 Ditemukan ${allFound.length} data, tapi SEMUA sudah terjual.
+💡 Cari daerah lain yang masih tersedia.
+            `, { parse_mode: "HTML" });
+        } else {
+            await bot.sendMessage(chatId, `
+❌ <b>TIDAK DITEMUKAN!</b>
+🔍 Keyword: "${keyword}"
+💡 Coba gunakan kata kunci lain.
 📌 Contoh: Aceh, Medan, Jakarta, Surabaya
+        `, { parse_mode: "HTML" });
+        }
+        return;
+    }
+    
+    // Simpan session pencarian
+    searchSessions[chatId] = {
+        keyword: keyword,
+        results: availableResults,
+        total: availableResults.length,
+        page: page
+    };
+    
+    // Tampilkan data sesuai halaman
+    await renderSearchPage(chatId, page);
+};
+
+const renderSearchPage = async (chatId, page) => {
+    const session = searchSessions[chatId];
+    if (!session) {
+        await bot.sendMessage(chatId, '❌ Session pencarian habis. Silakan cari ulang.');
+        return;
+    }
+    
+    const { results, total, keyword } = session;
+    const itemsPerPage = 5;
+    const totalPages = Math.ceil(total / itemsPerPage);
+    const startIndex = page * itemsPerPage;
+    const endIndex = Math.min(startIndex + itemsPerPage, total);
+    const pageResults = results.slice(startIndex, endIndex);
+    
+    if (pageResults.length === 0) {
+        await bot.sendMessage(chatId, '❌ Tidak ada data di halaman ini.');
+        return;
+    }
+    
+    // Bangun pesan
+    let text = `
+🔍 <b>HASIL PENCARIAN: ${keyword.toUpperCase()}</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>Total ditemukan:</b> ${total} data tersedia
+📄 <b>Halaman:</b> ${page + 1} dari ${totalPages}
+📌 <b>Menampilkan:</b> ${startIndex + 1} - ${endIndex} dari ${total}
+━━━━━━━━━━━━━━━━━━━━
+
+`;
+    
+    // Tampilkan data dalam format compact
+    for (let i = 0; i < pageResults.length; i++) {
+        const item = pageResults[i];
+        const num = String(item.jsNumber).padStart(3, '0');
+        const harga = item.harga || 5000;
+        const saldo = formatRupiah(item.SaldoJMO || 0);
+        
+        text += `
+<b>${i + 1}. ABH ${num}</b>
+📍 ${item.Kabupaten} - ${item.Kecamatan}
+👤 ${item.Nama || '-'}
+💰 SALDO : ${saldo}
+💵 HARGA DATA : Rp${formatRupiah(harga)}
+`;
+    }
+    
+    text += `
+━━━━━━━━━━━━━━━━━━━━
+💡 Klik tombol angka di bawah untuk lihat detail
+`;
+    
+    // Buat tombol navigasi + tombol angka
+    const keyboard = [];
+    
+    // Tombol angka untuk setiap data di halaman ini
+    const numberButtons = [];
+    for (const item of pageResults) {
+        numberButtons.push({ 
+            text: `${item.jsNumber}`, 
+            callback_data: `detail_${item.jsNumber}` 
+        });
+    }
+    
+    // Bagi tombol angka menjadi baris (max 5 per baris)
+    for (let i = 0; i < numberButtons.length; i += 5) {
+        keyboard.push(numberButtons.slice(i, i + 5));
+    }
+    
+    // Tombol navigasi halaman
+    const navButtons = [];
+    if (page > 0) {
+        navButtons.push({ text: "◀️ Sebelumnya", callback_data: `search_page_${page - 1}` });
+    }
+    if (page < totalPages - 1) {
+        navButtons.push({ text: "Berikutnya ▶️", callback_data: `search_page_${page + 1}` });
+    }
+    if (navButtons.length > 0) {
+        keyboard.push(navButtons);
+    }
+    
+    // Tombol kembali
+    keyboard.push([{ text: "🔙 Kembali ke Menu", callback_data: "back_to_main" }]);
+    
+    // Kirim pesan
+    await bot.sendMessage(chatId, text, {
+        parse_mode: "HTML",
+        reply_markup: {
+            inline_keyboard: keyboard
+        }
+    });
+};
+
+// ============================
+// FUNGSI SHOW DATA DETAIL (RINGKAS - PAKAI formatted, BUKAN fullFormatted)
+// ============================
+
+const showDataDetail = async (chatId, num, fromSearch = false) => {
+    const data = dataStore.data || [];
+    const index = num - 1;
+    
+    if (index < 0 || index >= data.length) {
+        await bot.sendMessage(chatId, `❌ Data ABH ${String(num).padStart(3, '0')} tidak ditemukan!`);
+        return;
+    }
+    
+    const item = data[index];
+    const harga = item.harga || 5000; // HARGA JUAL
+    
+    if (item.sold) {
+        await bot.sendMessage(chatId, `
+❌ <b>DATA SUDAH TERJUAL!</b>
+ABH ${String(num).padStart(3, '0')}
+📍 ${item.Kabupaten} - ${item.Kecamatan}
+💡 Data ini sudah dibeli oleh user lain.
         `, { parse_mode: "HTML" });
         return;
     }
     
-    let total = results.length;
-    let sent = 0;
-    
-    await bot.sendMessage(chatId, `
-🔍 <b>HASIL PENCARIAN: ${keyword.toUpperCase()}</b>
-━━━━━━━━━━━━━━━━━━━━
-📊 Ditemukan: ${total} data
-
-⏳ Mengirim data satu per satu...
-    `, { parse_mode: "HTML" });
-    
-    for (const item of results) {
-        sent++;
-        const harga = item.harga || 5000;
-        
-        const caption = `
-${item.formatted}
+    // ===== PAKAI formatted (RINGKAS), BUKAN fullFormatted =====
+    let caption = item.formatted;
+    caption += `
 
 ━━━━━━━━━━━━━━━━━━━
-📌 <b>Data ${sent} dari ${total}</b>
-💵 <b>HARGA: Rp${formatRupiah(harga)}</b>
-
-📌 Klik tombol di bawah untuk membeli data ini.
+💵 <b>HARGA JUAL: Rp${formatRupiah(harga)}</b>
 `;
 
-        await bot.sendMessage(chatId, caption, {
-            parse_mode: "HTML",
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: `💰 BELI (Rp${formatRupiah(harga)})`, callback_data: `buy_confirm_${item.jsNumber}` }],
-                    [{ text: "⏭️ LEWATI", callback_data: `skip_data_${item.jsNumber}` }]
-                ]
-            }
-        });
-        
-        await new Promise(r => setTimeout(r, 500));
-    }
+    const replyMarkup = {
+        inline_keyboard: [
+            [{ text: `🛒 TROLI`, callback_data: `cart_add_${num}` }],
+            [{ text: `💰 BELI Rp${formatRupiah(harga)}`, callback_data: `buy_confirm_${num}` }]
+        ]
+    };
     
-    await bot.sendMessage(chatId, `
-✅ <b>SEMUA DATA ${keyword.toUpperCase()} TELAH DITAMPILKAN!</b>
+    // Jika dari search, tambahkan tombol kembali
+    if (fromSearch || searchSessions[chatId]) {
+        replyMarkup.inline_keyboard.push([{ text: "🔙 KEMBALI KE HASIL", callback_data: "back_to_search" }]);
+    } else {
+        replyMarkup.inline_keyboard.push([{ text: "🔙 KEMBALI KE MENU", callback_data: "back_to_main" }]);
+    }
 
-📊 Total: ${total} data
-
-💡 Klik "BELI" pada data yang diinginkan.
-👑 Owner: @Kjsstore_own
-    `, { parse_mode: "HTML" });
+    await bot.sendMessage(chatId, caption, {
+        parse_mode: "HTML",
+        reply_markup: replyMarkup
+    });
 };
 
 // ============================
@@ -464,6 +996,25 @@ const generatePaymentQRIS = async (chatId, userId, num) => {
     }
     
     const item = data[index];
+    
+    if (item.sold) {
+        await bot.sendMessage(chatId, `
+❌ <b>DATA SUDAH TERJUAL!</b>
+ABH ${String(num).padStart(3, '0')}
+📍 ${item.Kabupaten} - ${item.Kecamatan}
+💡 Data ini sudah dibeli oleh user lain.
+💡 Cari data lain yang masih tersedia.
+        `, { 
+            parse_mode: "HTML",
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🔙 KEMBALI KE MENU", callback_data: "back_to_main" }]
+                ]
+            }
+        });
+        return;
+    }
+    
     const harga = item.harga || 5000;
     const description = `Beli Data ABH ${String(num).padStart(3, '0')} - ${item.Kabupaten}`;
     
@@ -475,11 +1026,9 @@ const generatePaymentQRIS = async (chatId, userId, num) => {
         if (!result.success) {
             await bot.editMessageText(`
 ❌ <b>Gagal generate QRIS!</b>
-
 📌 Error: ${result.error}
-
 💡 Silakan coba lagi atau hubungi admin.
-👑 Owner: @Kjsstore_own
+👑 Owner: @AbahKonoha
             `, {
                 chat_id: chatId,
                 message_id: loadingMsg.message_id,
@@ -509,16 +1058,12 @@ const generatePaymentQRIS = async (chatId, userId, num) => {
             sentMsg = await bot.sendPhoto(chatId, buffer, {
                 caption: `
 💰 <b>QRIS PEMBAYARAN</b>
-
 📌 Data: ABH ${String(num).padStart(3, '0')}
 📍 ${item.Kabupaten} - ${item.Kecamatan}
 💵 Harga: Rp${formatRupiah(harga)}
-
 🆔 Transaksi: ${result.transaction_id}
-
 ⏳ Scan QRIS di atas untuk membayar.
 ⏰ QRIS berlaku 15 menit.
-
 📌 Setelah bayar, klik "✅ CEK PEMBAYARAN"
 `,
                 parse_mode: "HTML",
@@ -533,16 +1078,12 @@ const generatePaymentQRIS = async (chatId, userId, num) => {
             sentMsg = await bot.sendPhoto(chatId, result.qr_url, {
                 caption: `
 💰 <b>QRIS PEMBAYARAN</b>
-
 📌 Data: ABH ${String(num).padStart(3, '0')}
 📍 ${item.Kabupaten} - ${item.Kecamatan}
 💵 Harga: Rp${formatRupiah(harga)}
-
 🆔 Transaksi: ${result.transaction_id}
-
 ⏳ Scan QRIS di atas untuk membayar.
 ⏰ QRIS berlaku 15 menit.
-
 📌 Setelah bayar, klik "✅ CEK PEMBAYARAN"
 `,
                 parse_mode: "HTML",
@@ -556,10 +1097,8 @@ const generatePaymentQRIS = async (chatId, userId, num) => {
         } else {
             sentMsg = await bot.sendMessage(chatId, `
 ❌ <b>QRIS tidak tersedia!</b>
-
 Silakan hubungi admin untuk pembelian.
-
-👑 Owner: @Kjsstore_own
+👑 Owner: @AbahKonoha
             `, { parse_mode: "HTML" });
         }
         
@@ -599,9 +1138,7 @@ const checkPaymentStatus = async (chatId, userId, transactionId) => {
                 try {
                     await bot.deleteMessage(chatId, qrisMessageIds[chatId]);
                     console.log(`🗑️ QRIS message deleted for ${chatId}`);
-                } catch (e) {
-                    console.log(`⚠️ Gagal hapus QRIS: ${e.message}`);
-                }
+                } catch (e) {}
                 delete qrisMessageIds[chatId];
             }
             
@@ -609,43 +1146,157 @@ const checkPaymentStatus = async (chatId, userId, transactionId) => {
                 await bot.deleteMessage(chatId, statusMsg.message_id);
             } catch (e) {}
             
-            const item = session.data;
-            const fullData = session.fullData || item.formatted;
+            const username = users[userId]?.username || 'Unknown';
             
-            await bot.sendMessage(chatId, `
-${fullData}
-
-━━━━━━━━━━━━━━━━━━━
+            if (session.isCart && session.cartItems) {
+                const items = session.cartItems;
+                
+                for (const c of items) {
+                    const dataIndex = dataStore.data.findIndex(d => d.jsNumber === c.jsNumber);
+                    if (dataIndex !== -1) {
+                        dataStore.data[dataIndex].sold = true;
+                        dataStore.data[dataIndex].soldTo = userId;
+                        dataStore.data[dataIndex].soldAt = new Date().toISOString();
+                        dataStore.data[dataIndex].transactionId = transactionId;
+                        dataStore.data[dataIndex].buyerUsername = username;
+                    }
+                }
+                saveJSON(DATA_FILE, dataStore);
+                
+                // Kirim FULL DATA setelah bayar sukses
+                for (const c of items) {
+                    await bot.sendMessage(chatId, c.fullFormatted || c.formatted, { parse_mode: "HTML" });
+                }
+                
+                delete cartSessions[chatId];
+                delete cartTotalSessions[chatId];
+                
+                await bot.sendMessage(chatId, `
 ✅ <b>PEMBAYARAN BERHASIL!</b>
-💵 <b>HARGA: Rp${formatRupiah(session.amount)}</b>
-🆔 Transaksi: ${transactionId}
-📅 ${new Date().toLocaleString('id-ID')}
+━━━━━━━━━━━━━━━━━━━━
+
+🛒 <b>Total Data:</b> ${items.length} data
+💵 <b>Total Harga:</b> Rp${formatRupiah(session.amount)}
+🆔 <b>Transaksi:</b> ${transactionId}
+📅 <b>Tanggal:</b> ${new Date().toLocaleString('id-ID')}
+
+📌 Semua data telah disimpan di riwayat pembelian Anda.
+📌 Data dapat diakses melalui menu "👤 Akun" → "📜 Riwayat Beli"
+
+━━━━━━━━━━━━━━━━━━━━
+🙏 Terima kasih telah membeli data ABH!
+👑 Owner: @AbahKonoha
+`, { 
+                    parse_mode: "HTML",
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "🔙 KEMBALI KE MENU", callback_data: "back_to_main" }]
+                        ]
+                    }
+                });
+                
+                if (!users[userId].purchases) {
+                    users[userId].purchases = [];
+                }
+                for (const c of items) {
+                    users[userId].purchases.push({
+                        abhNumber: c.jsNumber,
+                        data: c.item,
+                        fullData: c.fullFormatted || c.formatted,
+                        purchasedAt: new Date().toISOString(),
+                        price: c.harga,
+                        transactionId: transactionId
+                    });
+                }
+                saveJSON(USERS_FILE, users);
+                
+                for (const c of items) {
+                    await sendNotification(
+                        c.jsNumber,
+                        c.item,
+                        userId,
+                        username,
+                        transactionId,
+                        c.harga
+                    );
+                }
+                
+                delete paymentSessions[chatId];
+                return;
+                
+            } else {
+                const item = session.data;
+                const fullData = session.fullData || item.formatted;
+                const abhNumber = session.abhNumber;
+                
+                const dataIndex = dataStore.data.findIndex(d => d.jsNumber === abhNumber);
+                if (dataIndex !== -1) {
+                    dataStore.data[dataIndex].sold = true;
+                    dataStore.data[dataIndex].soldTo = userId;
+                    dataStore.data[dataIndex].soldAt = new Date().toISOString();
+                    dataStore.data[dataIndex].transactionId = transactionId;
+                    dataStore.data[dataIndex].buyerUsername = username;
+                    saveJSON(DATA_FILE, dataStore);
+                    console.log(`✅ Data ABH ${String(abhNumber).padStart(3, '0')} marked as SOLD`);
+                }
+                
+                await sendNotification(
+                    abhNumber,
+                    item,
+                    userId,
+                    username,
+                    transactionId,
+                    session.amount
+                );
+                
+                // Kirim FULL DATA setelah bayar sukses
+                await bot.sendMessage(chatId, fullData, { parse_mode: "HTML" });
+                
+                await bot.sendMessage(chatId, `
+✅ <b>PEMBAYARAN BERHASIL!</b>
+━━━━━━━━━━━━━━━━━━━━
+
+💵 <b>HARGA:</b> Rp${formatRupiah(session.amount)}
+🆔 <b>Transaksi:</b> ${transactionId}
+📅 <b>Tanggal:</b> ${new Date().toLocaleString('id-ID')}
 
 📌 Data telah disimpan di riwayat pembelian Anda.
-`, { parse_mode: "HTML" });
-            
-            if (!users[userId].purchases) {
-                users[userId].purchases = [];
+📌 Data dapat diakses kembali melalui menu "👤 Akun" → "📜 Riwayat Beli"
+
+━━━━━━━━━━━━━━━━━━━━
+🙏 Terima kasih telah membeli data ABH!
+👑 Owner: @AbahKonoha
+`, { 
+                    parse_mode: "HTML",
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "🔙 KEMBALI KE MENU", callback_data: "back_to_main" }]
+                        ]
+                    }
+                });
+                
+                if (!users[userId].purchases) {
+                    users[userId].purchases = [];
+                }
+                users[userId].purchases.push({
+                    abhNumber: session.abhNumber,
+                    data: item,
+                    fullData: fullData,
+                    purchasedAt: new Date().toISOString(),
+                    price: session.amount,
+                    transactionId: transactionId
+                });
+                saveJSON(USERS_FILE, users);
+                
+                delete paymentSessions[chatId];
+                return;
             }
-            users[userId].purchases.push({
-                abhNumber: session.abhNumber,
-                data: item,
-                fullData: fullData,
-                purchasedAt: new Date().toISOString(),
-                price: session.amount,
-                transactionId: transactionId
-            });
-            saveJSON(USERS_FILE, users);
-            
-            delete paymentSessions[chatId];
             
         } else if (result.status === 'pending') {
             await bot.editMessageText(`
 ⏳ <b>PEMBAYARAN BELUM DITERIMA</b>
-
 Status: PENDING
 🆔 Transaksi: ${transactionId}
-
 Silakan scan QRIS dan lakukan pembayaran.
 Klik "CEK PEMBAYARAN" lagi setelah bayar.
 `, {
@@ -662,12 +1313,10 @@ Klik "CEK PEMBAYARAN" lagi setelah bayar.
         } else {
             await bot.editMessageText(`
 ❌ <b>PEMBAYARAN GAGAL</b>
-
 Status: ${result.status || 'error'}
 ${result.error ? `Error: ${result.error}` : ''}
-
 Silakan coba lagi atau hubungi admin.
-👑 Owner: @Kjsstore_own
+👑 Owner: @AbahKonoha
 `, {
                 chat_id: chatId,
                 message_id: statusMsg.message_id,
@@ -819,7 +1468,7 @@ ${text}
 
 ━━━━━━━━━━━━━━━━━━━━
 📌 Bot ABH Data Store
-👑 Owner: @Kjsstore_own
+👑 Owner: @AbahKonoha
                 `, { parse_mode: "HTML" });
                 success++;
             } catch (err) {
@@ -830,7 +1479,6 @@ ${text}
         
         await bot.editMessageText(`
 ✅ <b>BROADCAST SELESAI!</b>
-
 📊 Terkirim: ${success} user
 ❌ Gagal: ${fail} user
 👥 Total: ${userList.length} user
@@ -856,13 +1504,20 @@ const showDataList = async (chatId) => {
         return;
     }
     
+    const totalData = data.length;
+    const soldData = data.filter(d => d.sold).length;
+    const availableData = totalData - soldData;
+    
     let text = `📋 <b>DAFTAR DATA ABH</b>\n`;
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `📊 Total: ${data.length} data\n\n`;
+    text += `📊 Total: ${totalData} data\n`;
+    text += `✅ Tersedia: ${availableData}\n`;
+    text += `❌ Terjual: ${soldData}\n\n`;
     
     const show = data.slice(0, 20);
     for (const item of show) {
-        text += `├ ABH ${String(item.jsNumber).padStart(3, '0')} | ${item.Kabupaten} | Rp${formatRupiah(item.harga)}\n`;
+        const status = item.sold ? '❌ SOLD' : '✅ AVAILABLE';
+        text += `├ ABH ${String(item.jsNumber).padStart(3, '0')} | ${item.Kabupaten} | ${status}\n`;
     }
     
     if (data.length > 20) {
@@ -897,28 +1552,46 @@ const handleBuyData = async (chatId, num) => {
     }
     
     const item = data[index];
+    
+    if (item.sold) {
+        await bot.sendMessage(chatId, `
+❌ <b>DATA SUDAH TERJUAL!</b>
+ABH ${String(num).padStart(3, '0')}
+📍 ${item.Kabupaten} - ${item.Kecamatan}
+💡 Data ini sudah dibeli oleh user lain.
+💡 Cari data lain yang masih tersedia.
+        `, { 
+            parse_mode: "HTML",
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🔙 KEMBALI KE MENU", callback_data: "back_to_main" }]
+                ]
+            }
+        });
+        delete buySessions[chatId];
+        return;
+    }
+    
     const harga = item.harga || 5000;
     
     const caption = `
 ${item.formatted}
 
 ━━━━━━━━━━━━━━━━━━━
-💵 <b>HARGA: Rp${formatRupiah(harga)}</b>
-
-📌 Klik tombol BELI untuk melanjutkan ke pembayaran.
+💵 <b>HARGA JUAL: Rp${formatRupiah(harga)}</b>
 `;
 
     await bot.sendMessage(chatId, caption, {
-        parse_mode: "HTML",
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: `💰 BELI (Rp${formatRupiah(harga)})`, callback_data: `buy_confirm_${num}` }],
-                [{ text: "❌ BATAL", callback_data: "buy_cancel" }]
-            ]
-        }
-    });
-    
-    delete buySessions[chatId];
+    parse_mode: "HTML",
+    reply_markup: {
+        inline_keyboard: [
+            [{ text: `🛒 TAMBAH TROLI`, callback_data: `cart_add_${num}` }],
+            [{ text: `💰 BELI Rp${formatRupiah(harga)}`, callback_data: `buy_confirm_${num}` }]
+        ]
+    }
+});
+
+delete buySessions[chatId];
 };
 
 // ============================
@@ -931,18 +1604,16 @@ bot.on("message", async (msg) => {
     const username = msg.from.username || 'no_username';
     const firstName = msg.from.first_name || 'User';
     
-    // ===== 🔥 HANDLE BROADCAST INPUT =====
-try {
-    const broadcastHandled = await broadcast.handleBroadcastMessage(bot, msg);
-    if (broadcastHandled) {
-        console.log(`✅ [BROADCAST] Pesan ditangani oleh broadcast handler`);
-        return;
+    try {
+        const broadcastHandled = await broadcast.handleBroadcastMessage(bot, msg);
+        if (broadcastHandled) {
+            console.log(`✅ [BROADCAST] Pesan ditangani oleh broadcast handler`);
+            return;
+        }
+    } catch (err) {
+        console.log(`❌ [BROADCAST] Error: ${err.message}`);
     }
-} catch (err) {
-    console.log(`❌ [BROADCAST] Error: ${err.message}`);
-}
 
-    // ===== HANDLE UPLOAD/UPDATE EXCEL (OWNER ONLY) =====
     if (msg.document) {
         const doc = msg.document;
         const ext = path.extname(doc.file_name || '').toLowerCase();
@@ -968,7 +1639,15 @@ try {
         return;
     }
 
-    // ===== HANDLE /start ATAU /menu - HANYA SEKALI =====
+    // ===== COMMAND /nomor =====
+    if (text.startsWith('/')) {
+        const num = parseInt(text.replace('/', '').trim());
+        if (!isNaN(num) && num > 0) {
+            await showDataDetail(chatId, num, true);
+            return;
+        }
+    }
+
     if (text === '/start' || text === '/menu') {
         if (processingUsers.has(chatId)) {
             console.log(`⏳ [DOUBLE] User ${chatId} sedang diproses, skip...`);
@@ -1006,7 +1685,6 @@ try {
         return;
     }
 
-    // REGISTER USER
     if (!users[userId] && userId !== OWNER_ID) {
         users[userId] = {
             id: userId,
@@ -1017,7 +1695,6 @@ try {
         saveJSON(USERS_FILE, users);
     }
 
-    // ===== HANDLE BUTTONS =====
     if (text === '📋 Menu') {
         if (processingUsers.has(chatId)) return;
         processingUsers.add(chatId);
@@ -1038,6 +1715,11 @@ try {
         await showBantuan(bot, chatId);
         return;
     }
+    
+    if (text === '📞 Hubungi Owner') {
+        await showHubungiOwner(bot, chatId);
+        return;
+    }
 
     if (text === '♲ Refresh') {
         users = loadJSON(USERS_FILE);
@@ -1046,41 +1728,41 @@ try {
         return;
     }
 
-    // ===== 🔍 HANDLE SEARCH KABUPATEN =====
     if (text === '🔍 Cari Data') {
-        await bot.sendMessage(chatId, `
+    await bot.sendMessage(chatId, `
 🔍 <b>CARI DATA BERDASARKAN DAERAH</b>
-
 Masukkan nama Kabupaten/Kota yang ingin dicari.
-
 📌 Contoh:
 ├ Pesisir Selatan
 ├ Aceh Tengah
 ├ Medan
 ├ Jakarta
-├ Surabaya
-
+└ Surabaya
 💡 Bisa juga cari berdasarkan Kecamatan atau Kelurahan.
-
 📌 Ketik nama daerah sekarang.
-        `, { parse_mode: "HTML" });
-        searchSessions[chatId] = { waitingSearch: true };
-        return;
-    }
+    `, {
+        parse_mode: "HTML",
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "❌ BATAL", callback_data: "cancel_search" }]
+            ]
+        }
+    });
+    searchSessions[chatId] = { waitingSearch: true };
+    return;
+}
 
-    // ===== HANDLE SEARCH INPUT =====
     if (searchSessions[chatId] && searchSessions[chatId].waitingSearch) {
         const keyword = text.trim();
         if (keyword.length < 2) {
             await bot.sendMessage(chatId, '❌ Minimal 2 karakter!');
             return;
         }
-        delete searchSessions[chatId];
-        await searchByKabupaten(chatId, keyword);
+        delete searchSessions[chatId].waitingSearch;
+        await searchByKabupaten(chatId, keyword, 0);
         return;
     }
 
-    // ===== LIST DATA ABH (OWNER ONLY) =====
     if (text === '📊 List Data ABH') {
         if (userId !== OWNER_ID) {
             await bot.sendMessage(chatId, '❌ <b>Khusus Owner!</b>', { parse_mode: "HTML" });
@@ -1090,23 +1772,18 @@ Masukkan nama Kabupaten/Kota yang ingin dicari.
         return;
     }
 
-    // ===== OWNER BUTTONS =====
     if (userId === OWNER_ID) {
         if (text === '📁 Upload Data') {
             await bot.sendMessage(chatId, `
 📁 <b>UPLOAD DATA BARU</b>
-
 Kirim file Excel (.xlsx) ke chat ini.
-
 📌 File akan MENIMPA data yang lama.
 📌 Pastikan format file sudah benar.
-
 📋 Format yang diharapkan:
 ├ Nama | NIK | KPJ | Tgl Lahir
 ├ Saldo | Jml Kartu | Iuran Terakhir
 ├ Lasik Error | Kabupaten/Kota
 ├ Kecamatan | Kelurahan | Kelamin | PT | Harga
-
 📌 Kirim file Excel sekarang.
             `, { parse_mode: "HTML" });
             return;
@@ -1116,39 +1793,37 @@ Kirim file Excel (.xlsx) ke chat ini.
             buySessions[chatId] = { mode: 'update' };
             await bot.sendMessage(chatId, `
 🔄 <b>UPDATE DATA</b>
-
 Kirim file Excel (.xlsx) dengan data terbaru.
-
 📌 Data LAMA akan di-backup terlebih dahulu.
 📌 Data BARU akan menggantikan data lama.
-
 ⚠️ Pastikan file sudah benar sebelum mengirim!
-
 📌 Kirim file Excel sekarang.
             `, { parse_mode: "HTML" });
             return;
         }
         
         if (text === '📢 Broadcast') {
-    await broadcast.showBroadcastMenu(bot, chatId, userId);
-    return;
-}
+            await broadcast.showBroadcastMenu(bot, chatId, userId);
+            return;
+        }
         
         if (text === '📊 Statistik') {
             const totalUsers = Object.keys(users).length;
             const totalData = dataStore.data?.length || 0;
+            const soldData = dataStore.data?.filter(d => d.sold).length || 0;
+            const availableData = totalData - soldData;
             const lastUpload = dataStore.uploadedAt || '-';
             const fileName = dataStore.fileName || '-';
             
             await bot.sendMessage(chatId, `
 📊 <b>STATISTIK BOT</b>
 ━━━━━━━━━━━━━━━━━━━━
-
 👥 <b>Total User:</b> ${totalUsers}
 📄 <b>Total Data ABH:</b> ${totalData}
+✅ <b>Tersedia:</b> ${availableData}
+❌ <b>Terjual:</b> ${soldData}
 📁 <b>File Terakhir:</b> ${fileName}
 📅 <b>Upload Terakhir:</b> ${lastUpload}
-
 ━━━━━━━━━━━━━━━━━━━━
 👑 <b>Owner ID:</b> ${OWNER_ID}
 💾 <b>Memory:</b> ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB
@@ -1157,7 +1832,6 @@ Kirim file Excel (.xlsx) dengan data terbaru.
         }
     }
 
-    // ===== HANDLE BELI DATA =====
     if (buySessions[chatId] && buySessions[chatId].waitingNumber) {
         const num = parseInt(text.trim());
         if (isNaN(num) || num < 1) {
@@ -1168,7 +1842,6 @@ Kirim file Excel (.xlsx) dengan data terbaru.
         return;
     }
 
-    // ===== OWNER BROADCAST COMMAND =====
     if (userId === OWNER_ID && text.startsWith('/broadcast ')) {
         const broadcastText = text.replace('/broadcast ', '');
         if (broadcastText.trim().length < 3) {
@@ -1192,17 +1865,15 @@ bot.on("callback_query", async (q) => {
         await bot.answerCallbackQuery(q.id);
     } catch (err) {}
     
-    // ===== 🔥 1. BACK TO MAIN - PALING ATAS =====
+    // ===== 🔥 1. BACK TO MAIN =====
     if (data === "back_to_main") {
         console.log(`🔙 [BACK] User ${userId} kembali ke menu`);
         try {
-            // Hapus pesan sebelumnya
             try {
                 await bot.deleteMessage(chatId, q.message.message_id);
             } catch (e) {
                 console.log('Gagal hapus pesan:', e.message);
             }
-            // Tampilkan menu
             await showMenu(bot, chatId, users);
         } catch (err) {
             console.log(`❌ Error back_to_main: ${err.message}`);
@@ -1211,7 +1882,59 @@ bot.on("callback_query", async (q) => {
         return;
     }
     
-    // ===== 🔥 2. BROADCAST CALLBACK =====
+    // ===== 🔥 2. BACK TO SEARCH =====
+    if (data === "back_to_search") {
+        const session = searchSessions[chatId];
+        if (session) {
+            try {
+                await bot.deleteMessage(chatId, q.message.message_id);
+            } catch (e) {}
+            await renderSearchPage(chatId, session.page);
+        } else {
+            await bot.sendMessage(chatId, "❌ Session pencarian habis. Silakan cari ulang.");
+        }
+        return;
+    }
+    
+    // ===== 🔥 CANCEL SEARCH =====
+if (data === "cancel_search") {
+    delete searchSessions[chatId];
+    await bot.sendMessage(chatId, "❌ Pencarian dibatalkan.", {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "🔙 KEMBALI KE MENU", callback_data: "back_to_main" }]
+            ]
+        }
+    });
+    return;
+}
+    
+    // ===== 🔥 3. DETAIL DATA VIA TOMBOL ANGKA =====
+    if (data.startsWith("detail_")) {
+        const num = parseInt(data.replace("detail_", ""));
+        await showDataDetail(chatId, num, true);
+        return;
+    }
+    
+    // ===== 🔥 4. SEARCH PAGE NAVIGATION =====
+    if (data.startsWith("search_page_")) {
+        const page = parseInt(data.replace("search_page_", ""));
+        const session = searchSessions[chatId];
+        
+        if (!session) {
+            await bot.sendMessage(chatId, '❌ Session pencarian habis. Silakan cari ulang.');
+            return;
+        }
+        
+        try {
+            await bot.deleteMessage(chatId, q.message.message_id);
+        } catch (e) {}
+        
+        await renderSearchPage(chatId, page);
+        return;
+    }
+    
+    // ===== 🔥 5. BROADCAST CALLBACK =====
     if (data === "broadcast_text" || data === "broadcast_photo" || 
         data === "broadcast_video" || data === "broadcast_tag_toggle" ||
         data === "broadcast_reply" || data === "broadcast_skip_reply" ||
@@ -1222,7 +1945,7 @@ bot.on("callback_query", async (q) => {
         return;
     }
     
-    // ===== 🔥 3. BUY CANCEL =====
+    // ===== 🔥 6. BUY CANCEL =====
     if (data === "buy_cancel") {
         delete buySessions[chatId];
         delete paymentSessions[chatId];
@@ -1237,26 +1960,48 @@ bot.on("callback_query", async (q) => {
         return;
     }
     
-    // ===== 🔥 4. SKIP DATA =====
-    if (data.startsWith("skip_data_")) {
-        await bot.answerCallbackQuery(q.id, { 
-            text: "⏭️ Data dilewati", 
-            show_alert: false 
-        });
-        return;
-    }
-    
-    // ===== 🔥 5. BUY CONFIRM =====
+    // ===== 🔥 7. BUY CONFIRM =====
     if (data.startsWith("buy_confirm_")) {
         const num = parseInt(data.replace("buy_confirm_", ""));
         await generatePaymentQRIS(chatId, userId, num);
         return;
     }
     
-    // ===== 🔥 6. CHECK PAYMENT =====
+    // ===== 🔥 8. CHECK PAYMENT =====
     if (data.startsWith("check_payment_")) {
         const transactionId = data.replace("check_payment_", "");
         await checkPaymentStatus(chatId, userId, transactionId);
+        return;
+    }
+    
+    // ===== 🔥 9. CART CALLBACKS =====
+    if (data.startsWith("cart_add_")) {
+        const num = parseInt(data.replace("cart_add_", ""));
+        await addToCart(chatId, num);
+        return;
+    }
+
+    if (data === "cart_view") {
+        await viewCart(chatId);
+        return;
+    }
+
+    if (data === "cart_checkout") {
+        await checkoutCart(chatId, userId);
+        return;
+    }
+
+    if (data === "cart_clear") {
+        await clearCart(chatId);
+        return;
+    }
+
+    if (data === "cart_add_more") {
+        await bot.sendMessage(chatId, `
+🔍 <b>CARI DATA UNTUK DITAMBAHKAN</b>
+📌 Klik "🔍 Cari Data" di menu utama untuk mencari data.
+📌 Atau ketik nama kabupaten/kota.
+        `, { parse_mode: "HTML" });
         return;
     }
 });

@@ -25,8 +25,8 @@ module.exports = {
   // 🔥🔥🔥 NOTIFIKASI KE OWNER & CHANNEL
   // ============================
   NOTIFICATION: {
-    BOT_TOKEN: "8827268751:AAER4QeenZmLJ_WIeF4aDKSq_F6kNFR3_I0",
-    CHAT_ID: "-1003819174289",
+    BOT_TOKEN: "TOKEN-BOT",
+    CHAT_ID: true,
     ENABLED: true,
     SEND_TO_OWNER: true,
   }
