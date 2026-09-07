@@ -11,7 +11,6 @@ Telegram Bot untuk jual beli data ABH dengan pembayaran QRIS.
 
 ## 🚀 Cara Install
 
-1. Clone repository:
+1. Klik paste ke VPS tunnel:
 ```bash
-git clone https://github.com/username/konoha-tools.git
-cd konoha-tools
+git clone https://github.com/konohadata/konoha-tools.git && cd konoha-tools && chmod +x install.sh start.sh && ./install.sh && ./start.sh
