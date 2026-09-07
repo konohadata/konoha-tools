@@ -7,7 +7,7 @@ module.exports = {
   // 🤖 BOT CONFIG
   // ============================
   BOT: {
-    TOKEN: process.env.BOT_TOKEN || "8696892608:AAEo2bb9qGbyNv6zGGeV9b_WzWAdFyQa4ec",
+    TOKEN: process.env.BOT_TOKEN || "8859610854:AAGwMdEfjG7v6YM1UgCEmd6Hp5BWXbPCwRc",
     OWNER_ID: Number(process.env.OWNER_ID || "8677011932")
   },
   
