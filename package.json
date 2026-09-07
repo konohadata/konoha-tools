@@ -1,0 +1,30 @@
+{
+  "name": "konoha-tools",
+  "version": "2.0.0",
+  "description": "KONOHA Tools Telegram Bot - ABH Data Store",
+  "main": "bot.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "pm2": "pm2 start bot.js --name KONOHA-TOOLS",
+    "logs": "pm2 logs KONOHA-TOOLS",
+    "restart": "pm2 restart KONOHA-TOOLS",
+    "stop": "pm2 stop KONOHA-TOOLS"
+  },
+  "keywords": ["konoha", "telegram-bot", "konoha-tools", "abh-data"],
+  "author": "KONOHA Tools",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.13.6",
+    "node-telegram-bot-api": "^0.67.0",
+    "qrcode": "^1.5.4",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
