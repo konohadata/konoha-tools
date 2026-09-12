@@ -1,24 +1,51 @@
-// payment_autogopay.js - AUTOGOPAY DENGAN CREATED_AT
+// payment_autogopay.js - AUTOGOPAY DENGAN QR CODE + CREATED_AT
 
 const axios = require('axios');
 const config = require('./config');
+const qr = require('qrcode');
 
 const AUTOGOPAY_CONFIG = config.AUTOGOPAY || {};
 
 // ============================
-// GENERATE QRIS AUTOGOPAY
+// 🔥 HELPER: PARSE AMOUNT
+// ============================
+const parseAmount = (amount) => {
+    if (typeof amount === 'number') return Math.floor(amount);
+    if (typeof amount === 'string') {
+        const cleaned = amount.replace(/[^0-9]/g, '');
+        return parseInt(cleaned) || 0;
+    }
+    return parseInt(amount) || 0;
+};
+
+// ============================
+// 🔥 GENERATE QRIS AUTOGOPAY
 // ============================
 const generateQRIS = async (amount, description = '') => {
     try {
-        console.log(`💰 [AUTOGOPAY] Generating QRIS for Rp${amount}`);
-        
-        if (!AUTOGOPAY_CONFIG.ENABLED) {
-            throw new Error("AutoGoPay dinonaktifkan di config");
+        const cleanAmount = parseAmount(amount);
+
+        if (cleanAmount <= 0) {
+            console.error(`❌ [AUTOGOPAY] Invalid amount: ${amount} (type: ${typeof amount})`);
+            return {
+                success: false,
+                method: 'AUTOGOPAY',
+                error: `Invalid amount: ${amount}. Harus berupa angka positif.`
+            };
         }
-        
+
+        console.log(`💰 [AUTOGOPAY] Generating QRIS for Rp${cleanAmount}`);
+
+        if (!AUTOGOPAY_CONFIG.ENABLED) {
+            throw new Error('AutoGoPay dinonaktifkan di config');
+        }
+
         const response = await axios.post(
             `${AUTOGOPAY_CONFIG.API_URL}/qris/generate`,
-            { amount, description: description || 'Topup Coin' },
+            {
+                amount: cleanAmount,
+                description: description || 'Topup Coin'
+            },
             {
                 headers: {
                     'Authorization': `Bearer ${AUTOGOPAY_CONFIG.API_KEY}`,
@@ -27,52 +54,117 @@ const generateQRIS = async (amount, description = '') => {
                 timeout: AUTOGOPAY_CONFIG.TIMEOUT || 30000
             }
         );
-        
-        if (response.data?.success) {
-            const data = response.data.data;
-            const createdTime = Date.now();
-            
-            console.log(`✅ [AUTOGOPAY] QRIS Generated! ID: ${data.transaction_id}`);
-            
-            return {
-                success: true,
-                method: 'AUTOGOPAY',
-                transaction_id: data.transaction_id,
-                qr_url: data.qr_url,
-                amount: data.amount || amount,
-                amount_original: data.amount || amount,
-                random_add: 0, // AutoGoPay tidak punya random add
-                expiry_time: data.expiry_time || Date.now() + (15 * 60 * 1000),
-                image_data: data.image_data || null,
-                brand: 'AUTOGOPAY',
-                merchant: data.merchant || 'AutoGoPay',
-                created_at: createdTime, // 🔥 WAKTU QRIS DIBUAT
-                // 🔥 INFORMASI TAMBAHAN
-                display: {
-                    harga: data.amount || amount,
-                    kode_unik: 0,
-                    total: data.amount || amount,
-                }
-            };
+
+        if (!response.data?.success) {
+            throw new Error(response.data?.message || 'Gagal generate QRIS AutoGoPay');
         }
-        throw new Error(response.data?.message || 'Gagal generate QRIS AutoGoPay');
+
+        const data = response.data.data;
+        const createdTime = Date.now();
+
+        console.log(`✅ [AUTOGOPAY] QRIS Generated! ID: ${data.transaction_id}`);
+
+        // 🔥 GENERATE QR IMAGE
+        let imageData = null;
+
+        // Prioritas 1: qr_string -> generate pakai qrcode lib
+        if (data.qr_string) {
+            console.log(`🔄 [AUTOGOPAY] Generating QR from qr_string...`);
+            try {
+                const qrBuffer = await qr.toBuffer(data.qr_string, {
+                    type: 'png',
+                    width: 400,
+                    margin: 2
+                });
+                imageData = `data:image/png;base64,${qrBuffer.toString('base64')}`;
+                console.log(`✅ [AUTOGOPAY] QR generated from qr_string`);
+            } catch (qrError) {
+                console.log(`❌ [AUTOGOPAY] QR generation failed:`, qrError.message);
+            }
+        }
+
+        // Prioritas 2: image_data dari API
+        if (!imageData && data.image_data) {
+            imageData = data.image_data.startsWith('data:')
+                ? data.image_data
+                : `data:image/png;base64,${data.image_data}`;
+            console.log(`✅ [AUTOGOPAY] Using image_data from API`);
+        }
+
+        // Prioritas 3: fetch dari qr_url
+        if (!imageData && data.qr_url) {
+            console.log(`🔄 [AUTOGOPAY] Fetching from qr_url...`);
+            try {
+                const imgResponse = await axios.get(data.qr_url, {
+                    responseType: 'arraybuffer',
+                    timeout: 10000
+                });
+                const base64Data = Buffer.from(imgResponse.data, 'binary').toString('base64');
+                imageData = `data:image/png;base64,${base64Data}`;
+                console.log(`✅ [AUTOGOPAY] QR fetched from qr_url`);
+            } catch (fetchError) {
+                console.log(`❌ [AUTOGOPAY] Failed fetch qr_url:`, fetchError.message);
+            }
+        }
+
+        const finalAmount = Number(data.amount) || cleanAmount;
+        const expiryTime = data.expiry_time
+            ? new Date(data.expiry_time).getTime()
+            : Date.now() + (15 * 60 * 1000);
+
+        return {
+            success: true,
+            method: 'AUTOGOPAY',
+            transaction_id: data.transaction_id,
+            order_id: data.order_id,
+            qr_url: data.qr_url,
+            qr_string: data.qr_string,
+            amount: finalAmount,
+            amount_original: finalAmount,
+            random_add: 0,
+            expiry_time: expiryTime,
+            image_data: imageData,
+            brand: 'AUTOGOPAY',
+            merchant: data.merchant || 'AutoGoPay',
+            created_at: createdTime,
+            display: {
+                harga: finalAmount,
+                kode_unik: 0,
+                total: finalAmount
+            }
+        };
+
     } catch (error) {
         console.error('❌ [AUTOGOPAY] Error:', error.message);
+        if (error.response) {
+            console.error('📊 Status:', error.response.status);
+            console.error('📊 Data:', JSON.stringify(error.response.data));
+        }
         return { success: false, method: 'AUTOGOPAY', error: error.message };
     }
 };
 
 // ============================
-// CEK STATUS AUTOGOPAY
+// 🔥 CEK STATUS AUTOGOPAY
 // ============================
 const cekStatus = async (transactionId) => {
     try {
         if (!AUTOGOPAY_CONFIG.ENABLED) {
-            throw new Error("AutoGoPay dinonaktifkan di config");
+            throw new Error('AutoGoPay dinonaktifkan di config');
         }
-        
+
+        if (!transactionId) {
+            return {
+                success: false,
+                status: 'pending',
+                method: 'AUTOGOPAY',
+                matched: false,
+                error: 'transactionId kosong'
+            };
+        }
+
         console.log(`🔍 [AUTOGOPAY] Checking status for ${transactionId}...`);
-        
+
         const response = await axios.post(
             `${AUTOGOPAY_CONFIG.API_URL}/qris/status`,
             { transaction_id: transactionId },
@@ -84,38 +176,40 @@ const cekStatus = async (transactionId) => {
                 timeout: AUTOGOPAY_CONFIG.TIMEOUT || 10000
             }
         );
-        
+
         console.log(`📊 [AUTOGOPAY] Status: ${response.data?.data?.transaction_status || 'pending'}`);
-        
-        if (response.data?.success) {
-            const status = response.data.data?.transaction_status || 'pending';
-            const isSettlement = status === 'settlement' || status === 'success' || status === 'paid';
-            
-            if (isSettlement) {
-                console.log(`✅ [AUTOGOPAY] Payment found!`);
-            }
-            
+
+        if (!response.data?.success) {
             return {
-                success: true,
-                status: status,
+                success: false,
+                status: 'pending',
                 method: 'AUTOGOPAY',
-                brand: response.data.data?.brand || 'AUTOGOPAY',
-                transaction: response.data.data,
-                matched: isSettlement,
+                matched: false,
+                error: response.data?.message || 'Unknown error'
             };
         }
-        return { 
-            success: false, 
-            status: 'pending', 
+
+        const status = response.data.data?.transaction_status || 'pending';
+        const isSettlement = ['settlement', 'success', 'paid'].includes(status);
+
+        if (isSettlement) {
+            console.log(`✅ [AUTOGOPAY] Payment found!`);
+        }
+
+        return {
+            success: true,
+            status,
             method: 'AUTOGOPAY',
-            matched: false,
-            error: response.data?.message || 'Unknown error'
+            brand: response.data.data?.brand || 'AUTOGOPAY',
+            transaction: response.data.data,
+            matched: isSettlement
         };
+
     } catch (error) {
         console.error('❌ [AUTOGOPAY] Error:', error.message);
-        return { 
-            success: false, 
-            status: 'pending', 
+        return {
+            success: false,
+            status: 'pending',
             method: 'AUTOGOPAY',
             matched: false,
             error: error.message
@@ -124,36 +218,41 @@ const cekStatus = async (transactionId) => {
 };
 
 // ============================
-// CEK STATUS DENGAN RETRY
+// 🔥 CEK STATUS DENGAN RETRY
 // ============================
 const cekStatusWithRetry = async (transactionId, maxRetry = 3) => {
     let lastError = null;
-    
+
     for (let i = 0; i < maxRetry; i++) {
         console.log(`🔄 [AUTOGOPAY] Cek status attempt ${i + 1}/${maxRetry}`);
-        
+
         const result = await cekStatus(transactionId);
-        
-        // Jika berhasil atau status settlement, return
-        if (result.success || result.status === 'settlement' || result.status === 'success') {
+
+        if (result.success && result.matched) {
             return result;
         }
-        
-        // Jika error, tunggu lalu retry
-        if (!result.success && i < maxRetry - 1) {
+
+        if (['settlement', 'success', 'paid'].includes(result.status)) {
+            result.matched = true;
+            result.success = true;
+            return result;
+        }
+
+        lastError = result.error || lastError;
+
+        if (i < maxRetry - 1) {
             const waitTime = 3000 * (i + 1);
             console.log(`⏳ [AUTOGOPAY] Retry dalam ${waitTime}ms...`);
             await new Promise(resolve => setTimeout(resolve, waitTime));
         }
-        
-        lastError = result.error;
     }
-    
-    return { 
-        success: false, 
-        status: 'error', 
+
+    return {
+        success: false,
+        status: 'error',
         error: lastError || 'Max retry exceeded',
-        method: 'AUTOGOPAY' 
+        method: 'AUTOGOPAY',
+        matched: false
     };
 };
 

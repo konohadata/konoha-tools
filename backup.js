@@ -1,293 +1,317 @@
 // ============================
-// BACKUP.JS - AUTO BACKUP FULL SYSTEM
+// BACKUP.JS - BACKUP MANAGER UNTUK ABH DATA STORE
 // ============================
 
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
-const axios = require('axios');
-const config = require('./config');
 
-// ============================
-// CONFIG
-// ============================
-const BACKUP_DIR = './backups';
-const MAX_BACKUPS = 50; // Maksimal 50 backup
-const BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 jam sekali
-
-// ============================
-// NOTIF BOT (Untuk kirim backup ke Telegram)
-// ============================
-const NOTIF_BOT_TOKEN = config.NOTIFICATION?.BOT_TOKEN || null;
-const NOTIF_CHAT_ID = config.NOTIFICATION?.CHAT_ID || null;
-const NOTIF_ENABLED = config.NOTIFICATION?.ENABLED || false;
-
-// Semua file penting yang perlu di backup
-const IMPORTANT_FILES = [
-    'bot.js',
-    'menu.js',
-    'payment.js',
-    'broadcast.js',
-    'data_processor.js',
-    'config.js',
-    'package.json',
-    'package-lock.json',
-    'users.json',
-    'data_abk.json'
-];
-
-// Folder yang perlu di backup
-const IMPORTANT_FOLDERS = [
-    'temp_excel'
-];
-
-// ============================
-// CREATE BACKUP DIRECTORY
-// ============================
-if (!fs.existsSync(BACKUP_DIR)) {
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    console.log(`📁 Backup directory created: ${BACKUP_DIR}`);
+// ✅ PAKAI ADM-ZIP (LEBIH STABLE, COMMONJS)
+let AdmZip;
+try {
+    AdmZip = require('adm-zip');
+    console.log('✅ AdmZip loaded successfully');
+} catch (err) {
+    console.error('❌ Failed to load adm-zip:', err.message);
+    AdmZip = null;
 }
 
+const config = require('./config');
+const OWNER_ID = config.BOT.OWNER_ID;
+
 // ============================
-// FORMAT DATE
+// DAFTAR FILE YANG DI-BACKUP
+// ============================
+const FILES_TO_BACKUP = [
+    'bot.js',
+    'menu.js',
+    'discount.js',
+    'payment.js',
+    'broadcast.js',
+    'config.js',
+    'backup.js',
+    'users.json',
+    'data_abk.json',
+    'discounts.json',
+    'temp_excel/'
+];
+
+// ============================
+// FORMAT TANGGAL
 // ============================
 const getDateString = () => {
     const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}`;
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const minute = String(now.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}_${hour}-${minute}`;
 };
 
 // ============================
-// GET FILE SIZE
+// FORMAT UKURAN FILE
 // ============================
-const getFileSize = (filePath) => {
-    try {
-        if (fs.existsSync(filePath)) {
-            const stats = fs.statSync(filePath);
-            return (stats.size / 1024 / 1024).toFixed(2);
-        }
-        return '0';
-    } catch (e) {
-        return '0';
+const formatSize = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+};
+
+// ============================
+// BUAT BACKUP ZIP (PAKAI ADM-ZIP)
+// ============================
+const createBackup = async (chatId, bot) => {
+    if (!AdmZip) {
+        await bot.sendMessage(chatId, '❌ <b>AdmZip tidak tersedia!</b>\n\nInstall: npm install adm-zip', { parse_mode: "HTML" });
+        throw new Error('AdmZip not available');
     }
-};
-
-// ============================
-// CREATE BACKUP
-// ============================
-const createBackup = async () => {
-    try {
-        const dateStr = getDateString();
-        const backupFileName = `backup_${dateStr}.zip`;
-        const backupPath = path.join(BACKUP_DIR, backupFileName);
-        
-        console.log(`\n📦 Creating backup: ${backupFileName}`);
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        
-        // Kumpulkan file yang akan di backup
-        let filesToZip = [];
-        let missingFiles = [];
-        
-        // Cek file penting
-        for (const file of IMPORTANT_FILES) {
-            if (fs.existsSync(file)) {
-                filesToZip.push(file);
-                console.log(`  ✅ ${file} (${getFileSize(file)} MB)`);
-            } else {
-                missingFiles.push(file);
-                console.log(`  ⚠️ ${file} not found (skipped)`);
-            }
-        }
-        
-        // Cek folder
-        for (const folder of IMPORTANT_FOLDERS) {
-            if (fs.existsSync(folder)) {
-                filesToZip.push(folder);
-                console.log(`  ✅ ${folder}/ (folder)`);
-            } else {
-                console.log(`  ⚠️ ${folder}/ not found (skipped)`);
-            }
-        }
-        
-        if (filesToZip.length === 0) {
-            console.log('❌ No files to backup!');
-            return;
-        }
-        
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        
-        // Buat backup dengan zip
-        const fileList = filesToZip.join(' ');
-        const command = `zip -r "${backupPath}" ${fileList}`;
-        
-        return new Promise((resolve, reject) => {
-            exec(command, async (error, stdout, stderr) => {
-                if (error) {
-                    console.error(`❌ Backup failed: ${error.message}`);
-                    reject(error);
-                    return;
+    
+    const timestamp = getDateString();
+    const backupName = `backup_abh_${timestamp}`;
+    const backupDir = path.join(__dirname, 'backups');
+    const zipPath = path.join(backupDir, `${backupName}.zip`);
+    
+    if (!fs.existsSync(backupDir)) {
+        fs.mkdirSync(backupDir, { recursive: true });
+    }
+    
+    await bot.sendMessage(chatId, `⏳ <b>Membuat backup...</b>\n📁 Nama: ${backupName}.zip`, { parse_mode: "HTML" });
+    
+    return new Promise((resolve, reject) => {
+        try {
+            const zip = new AdmZip();
+            let addedFiles = [];
+            
+            for (const file of FILES_TO_BACKUP) {
+                const fullPath = path.join(__dirname, file);
+                
+                try {
+                    if (file.endsWith('/')) {
+                        if (fs.existsSync(fullPath)) {
+                            const folderName = file.replace('/', '');
+                            zip.addLocalFolder(fullPath, folderName);
+                            addedFiles.push(`📁 ${folderName}/`);
+                            console.log(`📁 Added folder: ${folderName}`);
+                        }
+                    } else {
+                        if (fs.existsSync(fullPath)) {
+                            zip.addLocalFile(fullPath);
+                            addedFiles.push(`📄 ${file}`);
+                            console.log(`📄 Added file: ${file}`);
+                        }
+                    }
+                } catch (err) {
+                    console.log(`⚠️ Error adding ${file}:`, err.message);
                 }
-                
-                const size = (fs.statSync(backupPath).size / 1024 / 1024).toFixed(2);
-                console.log(`✅ Backup created: ${backupFileName}`);
-                console.log(`📊 Size: ${size} MB`);
-                console.log(`📁 Location: ${backupPath}`);
-                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-                
-                // Hapus backup lama
-                cleanupOldBackups();
-                
-                // Kirim ke Telegram
-                if (NOTIF_ENABLED && NOTIF_BOT_TOKEN && NOTIF_CHAT_ID) {
-                    await sendBackupToTelegram(backupPath, backupFileName, size);
+            }
+            
+            // Tambahkan file .json lainnya
+            try {
+                const files = fs.readdirSync(__dirname);
+                for (const file of files) {
+                    if (file.endsWith('.json') && !FILES_TO_BACKUP.includes(file)) {
+                        const fullPath = path.join(__dirname, file);
+                        if (fs.statSync(fullPath).isFile()) {
+                            zip.addLocalFile(fullPath);
+                            addedFiles.push(`📄 ${file}`);
+                            console.log(`📄 Added extra JSON: ${file}`);
+                        }
+                    }
                 }
-                
-                resolve();
+            } catch (err) {
+                console.log('⚠️ Error reading extra files:', err.message);
+            }
+            
+            zip.writeZip(zipPath);
+            
+            const stats = fs.statSync(zipPath);
+            resolve({
+                success: true,
+                path: zipPath,
+                name: backupName,
+                size: stats.size,
+                files: addedFiles
             });
-        });
-        
-    } catch (error) {
-        console.error('❌ Backup error:', error.message);
-    }
+            
+        } catch (error) {
+            console.error('❌ Backup error:', error.message);
+            reject(error);
+        }
+    });
 };
 
 // ============================
-// CLEANUP OLD BACKUPS
+// LIST BACKUP
 // ============================
-const cleanupOldBackups = () => {
-    try {
-        const files = fs.readdirSync(BACKUP_DIR)
-            .filter(f => f.endsWith('.zip'))
-            .map(f => ({
-                name: f,
-                path: path.join(BACKUP_DIR, f),
-                time: fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs
-            }))
-            .sort((a, b) => b.time - a.time);
-        
-        if (files.length > MAX_BACKUPS) {
-            const toDelete = files.slice(MAX_BACKUPS);
-            for (const file of toDelete) {
-                fs.unlinkSync(file.path);
-                console.log(`🗑️ Deleted old backup: ${file.name}`);
+const listBackups = async () => {
+    const backupDir = path.join(__dirname, 'backups');
+    if (!fs.existsSync(backupDir)) return [];
+    
+    const files = fs.readdirSync(backupDir).filter(f => f.endsWith('.zip'));
+    const result = [];
+    
+    for (const file of files) {
+        const filePath = path.join(backupDir, file);
+        try {
+            const stats = fs.statSync(filePath);
+            result.push({
+                name: file,
+                path: filePath,
+                size: stats.size,
+                sizeFormatted: formatSize(stats.size),
+                created: stats.mtime,
+                createdFormatted: stats.mtime.toLocaleString('id-ID')
+            });
+        } catch (err) {
+            console.log(`⚠️ Error reading ${file}:`, err.message);
+        }
+    }
+    
+    result.sort((a, b) => b.created - a.created);
+    return result;
+};
+
+// ============================
+// CLEAN OLD BACKUPS
+// ============================
+const cleanOldBackups = async () => {
+    const backupDir = path.join(__dirname, 'backups');
+    if (!fs.existsSync(backupDir)) return 0;
+    
+    const files = fs.readdirSync(backupDir);
+    const now = Date.now();
+    const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 hari
+    let deleted = 0;
+    
+    for (const file of files) {
+        if (file.endsWith('.zip')) {
+            const filePath = path.join(backupDir, file);
+            try {
+                const stats = fs.statSync(filePath);
+                if (now - stats.mtimeMs > maxAge) {
+                    fs.unlinkSync(filePath);
+                    deleted++;
+                    console.log(`🗑️ Deleted old backup: ${file}`);
+                }
+            } catch (err) {
+                console.log(`⚠️ Error deleting ${file}:`, err.message);
             }
         }
-        
-        console.log(`📦 Total backups: ${Math.min(files.length, MAX_BACKUPS)}/${MAX_BACKUPS}`);
-        
-    } catch (error) {
-        console.error('❌ Cleanup error:', error.message);
     }
+    return deleted;
 };
 
 // ============================
-// SEND BACKUP TO TELEGRAM
+// RESTORE BACKUP
 // ============================
-const sendBackupToTelegram = async (filePath, fileName, size) => {
+const restoreBackup = async (backupName) => {
     try {
-        console.log(`📤 Uploading backup to Telegram...`);
-        
-        const FormData = require('form-data');
-        const formData = new FormData();
-        formData.append('chat_id', NOTIF_CHAT_ID);
-        formData.append('document', fs.createReadStream(filePath));
-        formData.append('caption', `📦 <b>Auto Backup Bot AbahKonoha</b>
-━━━━━━━━━━━━━━━━━━━━
-📅 <b>Tanggal:</b> ${new Date().toLocaleString('id-ID')}
-📊 <b>Size:</b> ${size} MB
-📁 <b>File:</b> ${fileName}
-━━━━━━━━━━━━━━━━━━━━
-✅ <b>Backup berhasil dibuat!</b>`);
-
-        const url = `https://api.telegram.org/bot${NOTIF_BOT_TOKEN}/sendDocument`;
-        const response = await axios.post(url, formData, {
-            headers: formData.getHeaders(),
-            timeout: 120000
-        });
-        
-        if (response.data && response.data.ok) {
-            console.log(`✅ Backup uploaded to Telegram!`);
-        } else {
-            console.log(`⚠️ Upload response: ${JSON.stringify(response.data)}`);
+        if (!AdmZip) {
+            return { success: false, error: 'AdmZip tidak tersedia! Install: npm install adm-zip' };
         }
         
+        const backupDir = path.join(__dirname, 'backups');
+        const zipPath = path.join(backupDir, backupName);
+        
+        if (!fs.existsSync(zipPath)) {
+            return { success: false, error: 'File backup tidak ditemukan!' };
+        }
+        
+        const zip = new AdmZip(zipPath);
+        zip.extractAllTo(__dirname, true);
+        
+        return { success: true, message: 'Restore berhasil!' };
     } catch (error) {
-        console.error(`❌ Upload to Telegram failed: ${error.message}`);
+        return { success: false, error: error.message };
     }
 };
 
 // ============================
-// LIST BACKUPS
+// HANDLE BACKUP COMMANDS
 // ============================
-const listBackups = () => {
-    if (!fs.existsSync(BACKUP_DIR)) {
-        console.log('❌ No backup directory found!');
-        return [];
+const handleBackupCommands = async (bot, msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const text = msg.text || '';
+    
+    if (String(userId) !== String(OWNER_ID)) {
+        await bot.sendMessage(chatId, '❌ <b>Khusus Owner!</b>', { parse_mode: "HTML" });
+        return false;
     }
     
-    const files = fs.readdirSync(BACKUP_DIR)
-        .filter(f => f.endsWith('.zip'))
-        .sort((a, b) => {
-            return fs.statSync(path.join(BACKUP_DIR, b)).mtimeMs - 
-                   fs.statSync(path.join(BACKUP_DIR, a)).mtimeMs;
-        });
-    
-    if (files.length === 0) {
-        console.log('❌ No backups found!');
-        return [];
+    if (text === '/backup' || text === '/backup now' || text === '💾 Backup') {
+        try {
+            await cleanOldBackups();
+            const result = await createBackup(chatId, bot);
+            
+            if (!result || !result.success) {
+                await bot.sendMessage(chatId, '❌ Gagal membuat backup!');
+                return true;
+            }
+            
+            await bot.sendDocument(chatId, result.path, {
+                caption: `
+✅ <b>BACKUP BERHASIL!</b>
+
+📁 Nama: ${result.name}.zip
+📦 Ukuran: ${formatSize(result.size)}
+📅 Tanggal: ${new Date().toLocaleString('id-ID')}
+
+📋 <b>File yang di-backup:</b>
+${result.files.map(f => `├ ${f}`).join('\n')}
+
+💡 Total: ${result.files.length} file/folder
+`,
+                parse_mode: "HTML"
+            });
+            return true;
+        } catch (error) {
+            console.error('❌ Backup error:', error.message);
+            await bot.sendMessage(chatId, `❌ <b>Gagal membuat backup!</b>\n\n${error.message}`, { parse_mode: "HTML" });
+            return true;
+        }
     }
     
-    console.log('\n📦 Available Backups:');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    files.forEach((f, i) => {
-        const size = (fs.statSync(path.join(BACKUP_DIR, f)).size / 1024 / 1024).toFixed(2);
-        const date = new Date(fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs).toLocaleString('id-ID');
-        console.log(`  ${i+1}. ${f}`);
-        console.log(`     📊 ${size} MB | 📅 ${date}`);
-    });
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    if (text === '/listbackup' || text === '/listbackups') {
+        const backups = await listBackups();
+        let textMsg = `
+📋 <b>DAFTAR BACKUP</b>
+━━━━━━━━━━━━━━━━━━━━
+
+📊 Total: ${backups.length} backup
+`;
+        if (backups.length === 0) {
+            textMsg += `\n❌ Belum ada backup.\n\n📌 Buat backup dengan <code>/backup</code>`;
+        } else {
+            for (let i = 0; i < Math.min(backups.length, 10); i++) {
+                const b = backups[i];
+                textMsg += `
+${i+1}. 📁 ${b.name}
+   📦 ${b.sizeFormatted}
+   📅 ${b.createdFormatted}
+`;
+            }
+            if (backups.length > 10) {
+                textMsg += `\n└ ... dan ${backups.length - 10} lainnya`;
+            }
+        }
+        await bot.sendMessage(chatId, textMsg, { parse_mode: "HTML" });
+        return true;
+    }
     
-    return files;
+    return false;
 };
 
 // ============================
-// AUTO BACKUP LOOP
+// EXPORT MODULE
 // ============================
-const startAutoBackup = () => {
-    console.log('\n🔄 AUTO BACKUP SYSTEM STARTED');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log(`⏰ Interval: ${BACKUP_INTERVAL / 1000 / 60 / 60} jam`);
-    console.log(`📁 Backup directory: ${BACKUP_DIR}`);
-    console.log(`📦 Max backups: ${MAX_BACKUPS}`);
-    console.log(`📄 Files to backup: ${IMPORTANT_FILES.length} files`);
-    console.log(`📁 Folders: ${IMPORTANT_FOLDERS.length} folders`);
-    console.log(`📤 Telegram upload: ${NOTIF_ENABLED ? '✅ ON' : '❌ OFF'}`);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-    
-    // Backup pertama kali (tunggu 5 detik)
-    setTimeout(async () => {
-        await createBackup();
-    }, 5000);
-    
-    // Backup berulang setiap interval
-    setInterval(async () => {
-        await createBackup();
-    }, BACKUP_INTERVAL);
-};
-
-// ============================
-// RUN
-// ============================
-if (require.main === module) {
-    startAutoBackup();
-}
-
 module.exports = {
     createBackup,
-    startAutoBackup,
     listBackups,
-    BACKUP_DIR,
-    MAX_BACKUPS,
-    IMPORTANT_FILES,
-    IMPORTANT_FOLDERS
+    cleanOldBackups,
+    formatSize,
+    handleBackupCommands,
+    restoreBackup
 };
