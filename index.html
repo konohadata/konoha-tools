@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KONOHA DATA STORE</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #0a0a0a;
+            --bg-2: #141414;
+            --bg-3: #1c1c1c;
+            --border: #2a2a2a;
+            --border-light: #333;
+            --text: #fff;
+            --text-muted: #888;
+            --text-dim: #555;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ==================== HEADER ==================== */
+        .header {
+            background: var(--bg-2);
+            border-bottom: 1px solid var(--border);
+            padding: 20px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-inner {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+        }
+
+        .logo-wrap {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--text);
+            color: var(--bg);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 800;
+        }
+
+        .logo-text {
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+        }
+
+        .logo-sub {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 2px;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            background: var(--bg-3);
+            border: 1px solid var(--border);
+            border-radius: 100px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #22c55e;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* ==================== SEARCH ==================== */
+        .search-section {
+            padding: 32px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .search-container {
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        .search-wrapper {
+            display: flex;
+            gap: 10px;
+            background: var(--bg-2);
+            border: 1px solid var(--border-light);
+            border-radius: 14px;
+            padding: 6px;
+            transition: all 0.2s;
+        }
+
+        .search-wrapper:focus-within {
+            border-color: var(--text);
+        }
+
+        .search-input {
+            flex: 1;
+            padding: 14px 18px;
+            background: transparent;
+            border: none;
+            color: var(--text);
+            font-size: 15px;
+            font-family: inherit;
+            font-weight: 500;
+            outline: none;
+        }
+
+        .search-input::placeholder {
+            color: var(--text-dim);
+        }
+
+        .search-btn {
+            padding: 14px 28px;
+            background: var(--text);
+            color: var(--bg);
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+
+        .search-btn:hover {
+            background: #e5e5e5;
+        }
+
+        .search-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* ==================== INFO BAR ==================== */
+        .info-bar {
+            background: var(--bg-2);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 20px;
+        }
+
+        .info-inner {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .info-inner strong {
+            color: var(--text);
+            font-weight: 700;
+        }
+
+        /* ==================== MAIN ==================== */
+        .main {
+            padding: 24px 20px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        /* ==================== LOADING ==================== */
+        .loading-container {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 80px 20px;
+            text-align: center;
+        }
+
+        .loading-container.active {
+            display: flex;
+        }
+
+        .spinner {
+            width: 48px;
+            height: 48px;
+            border: 3px solid var(--border);
+            border-top-color: var(--text);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .loading-subtext {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        /* ==================== EMPTY ==================== */
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+        }
+
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.4;
+        }
+
+        .empty-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .empty-text {
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+
+        /* ==================== DATA LIST ==================== */
+        .data-list {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* ==================== DATA CARD (FORMAT TEMPLATE) ==================== */
+        .data-card {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            overflow: hidden;
+            transition: all 0.2s;
+            animation: cardIn 0.3s ease both;
+        }
+
+        @keyframes cardIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .data-card:hover {
+            border-color: var(--border-light);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: var(--bg-3);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .card-kode {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 800;
+            font-size: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.3px;
+        }
+
+        .card-kode-icon {
+            width: 26px;
+            height: 26px;
+            background: var(--text);
+            color: var(--bg);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+        }
+
+        .copy-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: transparent;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: inherit;
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: var(--text);
+            color: var(--bg);
+            border-color: var(--text);
+        }
+
+        .copy-btn.copied {
+            background: #22c55e;
+            color: white;
+            border-color: #22c55e;
+        }
+
+        /* ==================== TEMPLATE BODY ==================== */
+        .card-body {
+            padding: 20px;
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 13.5px;
+            line-height: 1.8;
+            color: #e5e5e5;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .card-body .line {
+            display: block;
+        }
+
+        .card-body .separator {
+            color: var(--text-dim);
+            letter-spacing: -1px;
+        }
+
+        .card-body .spacer {
+            display: block;
+            height: 14px;
+        }
+
+        .card-body .loc {
+            color: #e5e5e5;
+        }
+
+        .card-body .saldo {
+            color: #22c55e;
+            font-weight: 700;
+        }
+
+        .card-body .kpj {
+            color: #e5e5e5;
+            letter-spacing: 0.5px;
+        }
+
+        .card-body .footer-line {
+            color: var(--text-muted);
+        }
+
+        .card-body .footer-jmo {
+            color: #22c55e;
+            font-weight: 600;
+        }
+
+        /* ==================== PAGINATION ==================== */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin-top: 24px;
+            padding: 16px;
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            flex-wrap: wrap;
+        }
+
+        .page-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 20px;
+            background: transparent;
+            border: 1px solid var(--border-light);
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 700;
+            font-family: inherit;
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .page-btn:hover:not(:disabled) {
+            background: var(--text);
+            color: var(--bg);
+            border-color: var(--text);
+        }
+
+        .page-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .page-info {
+            padding: 10px 20px;
+            background: var(--text);
+            color: var(--bg);
+            border-radius: 10px;
+            font-weight: 800;
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* ==================== TOAST ==================== */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%) translateY(150px);
+            background: var(--text);
+            color: var(--bg);
+            padding: 14px 24px;
+            border-radius: 12px;
+            font-weight: 700;
+            font-size: 14px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* ==================== FOOTER ==================== */
+        .footer {
+            padding: 20px;
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-dim);
+            border-top: 1px solid var(--border);
+            background: var(--bg-2);
+            margin-top: 40px;
+        }
+
+        /* ==================== RESPONSIVE ==================== */
+        @media (max-width: 768px) {
+            .logo-text { font-size: 15px; }
+            .search-wrapper { flex-direction: column; padding: 8px; }
+            .search-btn { width: 100%; justify-content: center; }
+            .card-body { font-size: 12.5px; padding: 16px; }
+        }
+
+        /* ==================== SCROLLBAR ==================== */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-light);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #444;
+        }
+    </style>
+</head>
+<body>
+    <!-- HEADER -->
+    <div class="header">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <div class="logo-icon">K</div>
+                <div>
+                    <div class="logo-text">KONOHA DATA STORE</div>
+                    <div class="logo-sub">Premium Search System</div>
+                </div>
+            </div>
+            <div class="status-badge">
+                <div class="status-dot"></div>
+                <span>Online</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- SEARCH -->
+    <div class="search-section">
+        <div class="search-container">
+            <div class="search-wrapper">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    class="search-input" 
+                    placeholder="Cari KAB, KEC, KEL, KPJ, atau kode ABH..."
+                    autocomplete="off"
+                >
+                <button id="searchBtn" class="search-btn" onclick="doSearch()">
+                    <span>🔍</span>
+                    <span>Cari</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- INFO BAR -->
+    <div class="info-bar" id="infoBar" style="display:none;">
+        <div class="info-inner">
+            <div>🔎 Hasil: <strong id="infoQuery">—</strong></div>
+            <div>📊 <strong id="infoTotal">0</strong> data ditemukan</div>
+            <div>📄 Halaman <strong id="infoPage">1</strong> / <strong id="infoTotalPage">1</strong></div>
+        </div>
+    </div>
+
+    <!-- MAIN -->
+    <div class="main">
+        <!-- LOADING -->
+        <div class="loading-container" id="loadingContainer">
+            <div class="spinner"></div>
+            <div class="loading-text">🔍 Mencari data...</div>
+            <div class="loading-subtext">Mohon tunggu sebentar</div>
+        </div>
+
+        <!-- EMPTY -->
+        <div class="empty-state" id="emptyState">
+            <div class="empty-icon">🔍</div>
+            <div class="empty-title" id="emptyTitle">Siap Mencari</div>
+            <div class="empty-text" id="emptyText">Masukkan kata kunci untuk memulai pencarian data</div>
+        </div>
+
+        <!-- DATA LIST -->
+        <div class="data-list" id="dataList"></div>
+
+        <!-- PAGINATION -->
+        <div class="pagination" id="pagination" style="display:none;">
+            <button class="page-btn" id="btnPrev" onclick="prevPage()">
+                <span>⬅️</span> <span>Prev</span>
+            </button>
+            <div class="page-info" id="pageInfo">1 / 1</div>
+            <button class="page-btn" id="btnNext" onclick="nextPage()">
+                <span>Next</span> <span>➡️</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div class="footer">
+        KONOHA DATA STORE © 2026
+    </div>
+
+    <!-- TOAST -->
+    <div class="toast" id="toast">
+        <span>✅</span>
+        <span id="toastText">Tersalin!</span>
+    </div>
+
+    <script>
+        let currentQuery = "";
+        let currentPage = 1;
+        let totalPage = 1;
+        const LIMIT = 10;
+
+        // ============================================================
+        // FORMAT DATA KE TEMPLATE (persis kayak bot)
+        // ============================================================
+        function formatData(item) {
+            return `🔖 ${item.KODE || "-"}
+━━━━━━━━━━━━━━━━━━━━
+📍KAB : ${item.KAB || "-"}
+📍KEC : ${item.KEC || "-"}
+📍KEL  : ${item.KEL || "-"}
+
+💰 SALDO : ${item.SALDO || "-"}
+
+🆔 KELAMIN : ${item.KELAMIN || "-"}
+💳 KPJ : ${item.KPJ || "-"}
+🔰 SENSOR : ${item.SENSOR || "-"}
+🗃️ IT : ${item.IT || "-"}
+
+🏛️ PT : ${item.PT || "-"}
+
+DPT JMO LASIK ✅
+🄱🄾🄱🄾🄱🄾🅈🄴🄽🄃`;
+        }
+
+        // ============================================================
+        // DO SEARCH
+        // ============================================================
+        async function doSearch(page = 1) {
+            const query = document.getElementById("searchInput").value.trim();
+            if (!query) {
+                showEmpty("⚠️", "Kata Kunci Kosong", "Masukkan kata kunci pencarian dulu");
+                return;
+            }
+
+            currentQuery = query;
+            currentPage = page;
+
+            document.getElementById("loadingContainer").classList.add("active");
+            document.getElementById("emptyState").style.display = "none";
+            document.getElementById("dataList").innerHTML = "";
+            document.getElementById("pagination").style.display = "none";
+            document.getElementById("infoBar").style.display = "none";
+
+            try {
+                const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&page=${page}&limit=${LIMIT}`);
+                const data = await res.json();
+
+                document.getElementById("loadingContainer").classList.remove("active");
+
+                if (data.total === 0) {
+                    showEmpty("🔍", "Tidak Ada Hasil", `Tidak ditemukan data untuk "${query}"`);
+                    return;
+                }
+
+                totalPage = data.totalPage;
+                renderResults(data);
+            } catch (err) {
+                document.getElementById("loadingContainer").classList.remove("active");
+                showEmpty("❌", "Terjadi Kesalahan", err.message);
+            }
+        }
+
+        // ============================================================
+        // RENDER — 1 DATA = 1 CARD FORMAT TEMPLATE
+        // ============================================================
+        function renderResults(data) {
+            const list = document.getElementById("dataList");
+            list.innerHTML = "";
+
+            data.results.forEach((item) => {
+                const card = document.createElement("div");
+                card.className = "data-card";
+
+                const formatted = formatData(item);
+                const itemStr = JSON.stringify(JSON.stringify(item)).replace(/"/g, "&quot;");
+
+                // Highlight saldo
+                const bodyHtml = formatted
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/(💰 SALDO : )([^\n]+)/g, '$1<span class="saldo">$2</span>')
+                    .replace(/(💳 KPJ : )([^\n]+)/g, '$1<span class="kpj">$2</span>')
+                    .replace(/(DPT JMO LASIK ✅)/g, '<span class="footer-jmo">$1</span>')
+                    .replace(/(🄱🄾🄱🄾🄱🄾🅈🄴🄽🄃)/g, '<span class="footer-line">$1</span>')
+                    .replace(/─/g, '<span class="separator">─</span>');
+
+                card.innerHTML = `
+                    <div class="card-header">
+                        <div class="card-kode">
+                            <div class="card-kode-icon">🔖</div>
+                            <span>${item.KODE || "-"}</span>
+                        </div>
+                        <button class="copy-btn" onclick='copyCard(this, ${itemStr})'>
+                            <span>📋</span>
+                            <span>Copy</span>
+                        </button>
+                    </div>
+                    <div class="card-body">${bodyHtml}</div>
+                `;
+                list.appendChild(card);
+            });
+
+            document.getElementById("infoQuery").textContent = data.query;
+            document.getElementById("infoTotal").textContent = data.total;
+            document.getElementById("infoPage").textContent = data.page;
+            document.getElementById("infoTotalPage").textContent = data.totalPage;
+            document.getElementById("infoBar").style.display = "block";
+
+            document.getElementById("pageInfo").textContent = `${data.page} / ${data.totalPage}`;
+            document.getElementById("btnPrev").disabled = data.page <= 1;
+            document.getElementById("btnNext").disabled = data.page >= data.totalPage;
+            document.getElementById("pagination").style.display = "flex";
+
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+
+        // ============================================================
+        // PAGINATION
+        // ============================================================
+        function prevPage() { if (currentPage > 1) doSearch(currentPage - 1); }
+        function nextPage() { if (currentPage < totalPage) doSearch(currentPage + 1); }
+
+         // ============================================================
+        // COPY CARD
+        // ============================================================
+        function copyCard(btn, itemJson) {
+            try {
+                const item = JSON.parse(itemJson);
+                const text = formatData(item);
+
+                // Coba cara modern dulu (butuh HTTPS)
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(text).then(() => {
+                        copySuccess(btn);
+                    }).catch(() => {
+                        fallbackCopy(text, btn);
+                    });
+                } else {
+                    // Fallback untuk HTTP
+                    fallbackCopy(text, btn);
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("❌ Gagal menyalin");
+            }
+        }
+
+        // Fallback pakai textarea + execCommand
+        function fallbackCopy(text, btn) {
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.style.position = "fixed";
+            textarea.style.top = "-9999px";
+            textarea.style.left = "-9999px";
+            textarea.setAttribute("readonly", "");
+            document.body.appendChild(textarea);
+            
+            textarea.select();
+            textarea.setSelectionRange(0, textarea.value.length);
+            
+            try {
+                const success = document.execCommand("copy");
+                if (success) {
+                    copySuccess(btn);
+                } else {
+                    showToast("❌ Gagal menyalin, coba manual");
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("❌ Gagal menyalin");
+            }
+            
+            document.body.removeChild(textarea);
+        }
+
+        // Animasi sukses
+        function copySuccess(btn) {
+            btn.classList.add("copied");
+            btn.innerHTML = '<span>✅</span><span>Copied!</span>';
+            showToast("✅ Data berhasil disalin!");
+            setTimeout(() => {
+                btn.classList.remove("copied");
+                btn.innerHTML = '<span>📋</span><span>Copy</span>';
+            }, 2000);
+        }
+
+        // ============================================================
+        // UI HELPERS
+        // ============================================================
+        function showEmpty(icon, title, text) {
+            document.getElementById("emptyTitle").textContent = title;
+            document.getElementById("emptyText").textContent = text;
+            document.getElementById("emptyState").style.display = "block";
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById("toast");
+            document.getElementById("toastText").textContent = msg.replace("✅ ", "");
+            toast.classList.add("show");
+            setTimeout(() => toast.classList.remove("show"), 2500);
+        }
+
+        // ============================================================
+        // INIT
+        // ============================================================
+        document.getElementById("searchInput").addEventListener("keypress", (e) => {
+            if (e.key === "Enter") doSearch();
+        });
+
+        document.getElementById("searchInput").focus();
+    </script>
+</body>
+</html>
